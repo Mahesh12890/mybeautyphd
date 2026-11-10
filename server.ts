@@ -114,6 +114,41 @@ const getGeminiClient = () => {
   });
 };
 
+type GeminiClient = NonNullable<ReturnType<typeof getGeminiClient>>;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function generateWithRetry(
+  ai: GeminiClient,
+  contents: ReturnType<typeof createUserContent>
+) {
+  const models = [...new Set([
+    process.env.GEMINI_MODEL?.trim() || 'gemini-3.8-flash',
+    process.env.GEMINI_FALLBACK_MODEL?.trim(),
+  ].filter((model): model is string => Boolean(model)))];
+
+  let lastError: unknown;
+  for (const model of models) {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        return await ai.models.generateContent({ model, contents });
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        const retryable = /503|UNAVAILABLE|429|overloaded|high demand|RESOURCE_EXHAUSTED/i.test(message);
+        if (!retryable) throw error;
+
+        console.warn(`[Gemini] Model ${model} is temporarily unavailable (attempt ${attempt}/5).`);
+        if (attempt < 5) await sleep(attempt * 5_000);
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error('All configured Gemini models are temporarily unavailable.');
+}
+
 function splitTranscriptIntoChunks(text: string, maxLength = 1600): string[] {
   const chunks: string[] = [];
   let remaining = text.trim();
@@ -167,10 +202,7 @@ Preserve every sentence, repetition, filler, false start, name, number, and the 
 Transcript segment ${index + 1} of ${chunks.length}:
 ${chunk}`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.1-flash-lite',
-      contents: prompt,
-    });
+    const response = await generateWithRetry(ai, createUserContent(prompt));
 
     if (String(response.candidates?.[0]?.finishReason) === 'MAX_TOKENS') {
       throw new Error(`The ${targetLanguage} translation stopped before segment ${index + 1} was complete. Please retry.`);
@@ -246,13 +278,10 @@ async function processTranscriptionJob(
         const recognitionHint = index === 0 && speechTranscript
           ? `\n\nOptional browser speech-recognition hint (may be incomplete or incorrect; use only when supported by the audio):\n${speechTranscript}`
           : '';
-        const response = await ai.models.generateContent({
-          model: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
-          contents: createUserContent([
-            createPartFromUri(uploadedFile.uri, uploadedFile.mimeType),
-            `${transcribeInstruction}${recognitionHint}`,
-          ]),
-        });
+        const response = await generateWithRetry(ai, createUserContent([
+          createPartFromUri(uploadedFile.uri, uploadedFile.mimeType),
+          `${transcribeInstruction}${recognitionHint}`,
+        ]));
 
         if (String(response.candidates?.[0]?.finishReason) === 'MAX_TOKENS') {
           throw new Error(`The transcript reached the model output limit on part ${index + 1}.`);

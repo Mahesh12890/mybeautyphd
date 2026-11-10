@@ -21,7 +21,7 @@ View your app in AI Studio: https://ai.studio/apps/598f7746-7a56-45fb-804e-36498
 
 ## Audio transcription
 
-The server accepts audio uploads up to 500 MB, converts them to mono 16 kHz WAV segments with FFmpeg, and transcribes the segments in order. The browser polls for progress and displays the transcript as segments finish. Set `GEMINI_API_KEY` in the server environment. The job queue is held in server memory, so run one server instance unless job storage is moved to a shared service. Hosting providers may enforce their own request-size limits below 500 MB.
+The server accepts audio uploads up to 500 MB, converts them to mono 16 kHz WAV segments with FFmpeg, and transcribes the segments in order. The browser polls for progress and displays the transcript as segments finish. Set `GEMINI_API_KEY` in the server environment. Transcription and translation retry transient Gemini overload/rate-limit errors up to five times, with optional `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL` overrides. The job queue is held in server memory, so run one server instance unless job storage is moved to a shared service. Hosting providers may enforce their own request-size limits below 500 MB.
 
 ## Deploy to GitHub Pages
 
