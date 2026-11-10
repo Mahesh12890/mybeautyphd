@@ -9,6 +9,18 @@ import { ProcedureImageItem, UserAccount } from '../types';
 import { playSound } from '../utils/audioUtils';
 import { getAllShowcasePhotos } from '../utils/database';
 
+function resolveShowcaseImageSource(source: string): string {
+  if (/^(data:|blob:|https?:\/\/)/i.test(source)) return source;
+
+  const normalizedPath = source.replace(/\\/g, '/');
+  const assetsIndex = normalizedPath.toLowerCase().lastIndexOf('/assets/');
+  const relativePath = assetsIndex >= 0
+    ? normalizedPath.slice(assetsIndex + 1)
+    : normalizedPath.replace(/^\.?\//, '');
+
+  return `${import.meta.env.BASE_URL}${relativePath}`;
+}
+
 export type { ProcedureImageItem };
 
 interface PlasticBeautyShowcaseProps {
@@ -653,14 +665,14 @@ export const PlasticBeautyShowcase: React.FC<PlasticBeautyShowcaseProps> = ({
                     {/* Before / After Dual Image Container with Smooth Cross-Fade */}
                     <div className="relative w-full h-full">
                       <img
-                        src={item.beforeImage}
+                        src={resolveShowcaseImageSource(item.beforeImage)}
                         alt={`${item.title} - Before`}
                         className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ease-in-out ${
                           !isAfter ? 'opacity-100 z-10' : 'opacity-0 z-0'
                         }`}
                       />
                       <img
-                        src={item.afterImage}
+                        src={resolveShowcaseImageSource(item.afterImage)}
                         alt={`${item.title} - After`}
                         className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ease-in-out ${
                           isAfter ? 'opacity-100 z-10' : 'opacity-0 z-0'
