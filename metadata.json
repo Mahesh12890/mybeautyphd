@@ -1,0 +1,6 @@
+{
+  "name": "AuraScholar - PhD Sociology Fieldwork Studio",
+  "description": "Integrated research workstation for PhD fieldwork on cosmetic surgery in Kerala: Malayalam-English audio transcription, qualitative literature vault, thesis milestones, and calibrated cognitive chess arena.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
