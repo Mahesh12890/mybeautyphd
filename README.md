@@ -19,6 +19,10 @@ View your app in AI Studio: https://ai.studio/apps/598f7746-7a56-45fb-804e-36498
 3. Run the app:
    `npm run dev`
 
+## Audio transcription
+
+The server accepts audio uploads up to 500 MB, converts them to mono 16 kHz WAV segments with FFmpeg, and transcribes the segments in order. The browser polls for progress and displays the transcript as segments finish. Set `GEMINI_API_KEY` in the server environment. The job queue is held in server memory, so run one server instance unless job storage is moved to a shared service. Hosting providers may enforce their own request-size limits below 500 MB.
+
 ## Deploy to GitHub Pages
 
 The `.github/workflows/deploy.yml` workflow builds the app and deploys `dist` when changes are pushed to `main` or `master`, or when manually started from the Actions tab. In the repository's **Settings → Pages**, set the build and deployment source to **GitHub Actions**.

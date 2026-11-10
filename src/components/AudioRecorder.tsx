@@ -17,109 +17,7 @@ import {
 import { playSound, formatTime } from '../utils/audioUtils';
 import { InterviewItem, ParticipantRole } from '../types';
 
-const GEMINI_AUDIO_MIME_TYPES = new Set([
-  'audio/aac',
-  'audio/aiff',
-  'audio/flac',
-  'audio/mp3',
-  'audio/mpeg',
-  'audio/ogg',
-  'audio/wav',
-  'audio/webm',
-]);
-const TRANSCRIPTION_AUDIO_LIMIT = 40 * 1024 * 1024;
-const TRANSCRIPTION_SAMPLE_RATE = 16_000;
-
-function getAudioMimeType(blob: Blob): string {
-  const mimeType = blob.type.split(';')[0].trim().toLowerCase();
-  const normalizedMimeTypes: Record<string, string> = {
-    'audio/wave': 'audio/wav',
-    'audio/x-aiff': 'audio/aiff',
-    'audio/x-flac': 'audio/flac',
-    'audio/x-wav': 'audio/wav',
-  };
-  if (mimeType && mimeType !== 'application/octet-stream') {
-    return normalizedMimeTypes[mimeType] || mimeType;
-  }
-
-  const fileName = blob instanceof File ? blob.name : '';
-  const extension = fileName.split('.').pop()?.toLowerCase();
-  const mimeTypesByExtension: Record<string, string> = {
-    aac: 'audio/aac',
-    aif: 'audio/aiff',
-    aiff: 'audio/aiff',
-    flac: 'audio/flac',
-    m4a: 'audio/mp4',
-    mp3: 'audio/mpeg',
-    oga: 'audio/ogg',
-    ogg: 'audio/ogg',
-    wav: 'audio/wav',
-    webm: 'audio/webm',
-  };
-  return extension ? mimeTypesByExtension[extension] || '' : '';
-}
-
-async function convertToGeminiAudio(blob: Blob): Promise<{ blob: Blob; mimeType: string; fileName: string }> {
-  const mimeType = getAudioMimeType(blob);
-  const fileName = blob instanceof File ? blob.name : 'fieldwork-recording.webm';
-  if (GEMINI_AUDIO_MIME_TYPES.has(mimeType)) {
-    return { blob, mimeType, fileName };
-  }
-
-  let audioContext: AudioContext | null = null;
-  try {
-    audioContext = new AudioContext();
-    const audioBuffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
-    const offlineContext = new OfflineAudioContext(
-      1,
-      Math.ceil(audioBuffer.duration * TRANSCRIPTION_SAMPLE_RATE),
-      TRANSCRIPTION_SAMPLE_RATE
-    );
-    const source = offlineContext.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(offlineContext.destination);
-    source.start();
-
-    const resampledAudio = await offlineContext.startRendering();
-    const samples = resampledAudio.getChannelData(0);
-    const wavBuffer = new ArrayBuffer(44 + samples.length * 2);
-    const view = new DataView(wavBuffer);
-    const writeText = (offset: number, value: string) => {
-      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
-    };
-
-    writeText(0, 'RIFF');
-    view.setUint32(4, 36 + samples.length * 2, true);
-    writeText(8, 'WAVE');
-    writeText(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, TRANSCRIPTION_SAMPLE_RATE, true);
-    view.setUint32(28, TRANSCRIPTION_SAMPLE_RATE * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeText(36, 'data');
-    view.setUint32(40, samples.length * 2, true);
-
-    for (let i = 0; i < samples.length; i++) {
-      const sample = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-    }
-
-    return {
-      blob: new Blob([wavBuffer], { type: 'audio/wav' }),
-      mimeType: 'audio/wav',
-      fileName: `${fileName.replace(/\.[^.]+$/, '') || 'audio'}.wav`,
-    };
-  } catch {
-    throw new Error('This audio format or codec is not supported by your browser for conversion. Try exporting the file as WAV, MP3, AAC, OGG, or FLAC and upload it again.');
-  } finally {
-    if (audioContext && audioContext.state !== 'closed') {
-      await audioContext.close();
-    }
-  }
-}
+const MAX_AUDIO_FILE_SIZE = 500 * 1024 * 1024;
 
 interface AudioRecorderProps {
   onTranscriptionComplete: (item: InterviewItem) => Promise<void>;
@@ -350,8 +248,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({ onTranscriptionCom
       setTranscriptionError('The selected audio file is empty. Choose a valid recording and try again.');
       return;
     }
-    if (file.size > 40 * 1024 * 1024) {
-      setTranscriptionError('Audio files must be smaller than 40 MB. Please choose a smaller file.');
+    if (file.size > MAX_AUDIO_FILE_SIZE) {
+      setTranscriptionError('Audio files must be 500 MB or smaller. Please choose a smaller file.');
       return;
     }
 
@@ -381,79 +279,85 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({ onTranscriptionCom
     setRecordingSeconds(0);
   };
 
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result !== 'string') {
-          reject(new Error('Could not read the audio file.'));
-          return;
-        }
-        const separatorIndex = reader.result.indexOf(',');
-        if (separatorIndex === -1) {
-          reject(new Error('Could not encode the audio file for transcription.'));
-          return;
-        }
-        resolve(reader.result.slice(separatorIndex + 1));
-      };
-      reader.onerror = () => reject(reader.error || new Error('Could not read the audio file.'));
-      reader.readAsDataURL(blob);
-    });
-  };
-
   // Trigger Dual Transcription & Translation for the entire audio file
   const processTranscription = async () => {
     if (!audioBlob) return;
 
     const cleanPatientName = patientName.trim() || 'Anonymous Respondent';
-    const durStr = formatTime(recordingSeconds || 30);
-
     if (audioBlob.size === 0) {
       setTranscriptionError('The recording is empty. Record or select audio before transcribing.');
       return;
     }
-    if (audioBlob.size > 40 * 1024 * 1024) {
-      setTranscriptionError('Audio recordings must be smaller than 40 MB. This recording is still available to download or replace.');
+    if (audioBlob.size > MAX_AUDIO_FILE_SIZE) {
+      setTranscriptionError('Audio recordings must be 500 MB or smaller. This recording is still available to download or replace.');
       return;
     }
 
     setTranscriptionError('');
     setIsProcessing(true);
-    setProcessingStage(`Reading entire audio file (${durStr})...`);
+    setProcessingStage('Uploading audio securely for transcription...');
 
     try {
-      setProcessingStage('Preparing audio for transcription...');
-      const preparedAudio = await convertToGeminiAudio(audioBlob);
-      if (preparedAudio.blob.size > TRANSCRIPTION_AUDIO_LIMIT) {
-        throw new Error('The audio is larger than the 40 MB transcription limit after format conversion. Please select a shorter or smaller recording.');
-      }
-      const base64Data = await blobToBase64(preparedAudio.blob);
-
-      setProcessingStage(`Transcribing the complete audio track (${durStr}), preserving every spoken word...`);
-
+      const fileName = audioBlob instanceof File ? audioBlob.name : 'fieldwork-recording.webm';
+      const formData = new FormData();
+      formData.append('audio', audioBlob, fileName);
+      formData.append('language', recordingLanguage);
+      formData.append('speechTranscript', spokenTranscript.trim().slice(0, 20_000));
       const response = await fetch('/api/transcribe', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioBase64: base64Data,
-          mimeType: preparedAudio.mimeType,
-          fileName: preparedAudio.fileName,
-          language: recordingLanguage,
-          speechTranscript: spokenTranscript.trim(),
-        }),
+        body: formData,
       });
 
-      setProcessingStage('Translating the complete transcript into Malayalam and English...');
-
-      const data = await response.json().catch(() => null);
+      const uploadResult = await response.json().catch(() => null);
       if (!response.ok) {
-        throw new Error(data?.error || `Transcription request failed (${response.status}).`);
+        throw new Error(uploadResult?.error || `Audio upload failed (${response.status}).`);
+      }
+      if (typeof uploadResult?.jobId !== 'string' || !uploadResult.jobId) {
+        throw new Error('The transcription service did not return a job ID. Your recording is still available to retry.');
+      }
+
+      let job: {
+        status: 'working' | 'done' | 'error';
+        progress: string;
+        text: string;
+        error?: string;
+        transcriptMalayalam?: string;
+        transcriptEnglish?: string;
+      };
+
+      do {
+        const jobResponse = await fetch(`/api/transcribe/${encodeURIComponent(uploadResult.jobId)}`);
+        const jobResult = await jobResponse.json().catch(() => null);
+        if (!jobResponse.ok) {
+          throw new Error(jobResult?.error || `Could not check transcription progress (${jobResponse.status}).`);
+        }
+        if (
+          !jobResult ||
+          !['working', 'done', 'error'].includes(jobResult.status) ||
+          typeof jobResult.progress !== 'string'
+        ) {
+          throw new Error('The transcription service returned an invalid job status.');
+        }
+
+        job = jobResult;
+        setProcessingStage(job.progress);
+        if (typeof job.text === 'string' && job.text.trim()) {
+          setSpokenTranscript(job.text);
+        }
+
+        if (job.status === 'working') {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        }
+      } while (job.status === 'working');
+
+      if (job.status === 'error') {
+        throw new Error(job.error || 'Transcription failed. Your recording is still available to retry.');
       }
       if (
-        typeof data?.transcriptMalayalam !== 'string' ||
-        !data.transcriptMalayalam.trim() ||
-        typeof data?.transcriptEnglish !== 'string' ||
-        !data.transcriptEnglish.trim()
+        typeof job.transcriptMalayalam !== 'string' ||
+        !job.transcriptMalayalam.trim() ||
+        typeof job.transcriptEnglish !== 'string' ||
+        !job.transcriptEnglish.trim()
       ) {
         throw new Error('The transcription service returned an incomplete transcript. Your audio is still available to retry.');
       }
@@ -466,8 +370,8 @@ export const AudioRecorder: React.FC<AudioRecorderProps> = ({ onTranscriptionCom
         date: new Date().toISOString().split('T')[0],
         audioDuration: formatTime(recordingSeconds || 30),
         audioBlob,
-        transcriptMalayalam: data.transcriptMalayalam,
-        transcriptEnglish: data.transcriptEnglish,
+        transcriptMalayalam: job.transcriptMalayalam,
+        transcriptEnglish: job.transcriptEnglish,
         thematicTags: [],
         sociologicalInsights: [],
       };
